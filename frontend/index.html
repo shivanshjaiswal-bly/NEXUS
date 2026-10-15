@@ -1,0 +1,1009 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <title>NEXUS — Real-Time Traffic Intelligence</title>
+
+    <!-- Leaflet CSS - loaded non-blocking (media="print" swap) so the NEXUS
+         UI paints immediately on slow connections. Same file, same version. -->
+    <link
+        rel="stylesheet"
+        href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        media="print"
+        onload="this.media='all'"
+    />
+    <noscript>
+        <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    </noscript>
+
+    <style>
+        :root{--color-normal:#16A34A;--color-moderate:#E8A317;--color-heavy:#E8601C;--color-blocked:#A32035;--color-route:#1463E6;
+--color-navy:#0F2447;--color-ink:#0F172A;--color-muted:#64748B;--color-line:#E2E8F0;--color-start:#16A34A;--color-dest:#DC2626;--panel-w:360px}
+*{margin:0;padding:0;box-sizing:border-box}
+[hidden]{display:none!important}
+html,body{width:100%;height:100%;overflow:hidden;font-family:'Segoe UI',Arial,sans-serif;color:var(--color-ink)}
+#map{position:fixed;inset:0;width:100%;height:100%;z-index:1}
+button{font:inherit;cursor:pointer}
+button:disabled{opacity:.5;cursor:not-allowed}
+.leaflet-top{margin-top:72px}
+
+/* Top bar */
+.topbar{position:fixed;top:12px;left:12px;right:12px;z-index:1000;height:56px;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:0 12px;background:#fff;border-radius:12px;box-shadow:0 4px 16px rgba(15,23,42,.14)}
+.brand{display:flex;align-items:center;gap:10px;min-width:0}
+.logo{width:36px;height:36px;border-radius:9px;background:var(--color-navy);color:#fff;display:grid;place-items:center;font-weight:800}
+.brand-text{display:flex;flex-direction:column;line-height:1.15}
+.brand-text b{font-size:16px;letter-spacing:.5px}
+.brand-text small{font-size:10px;letter-spacing:1.2px;color:var(--color-muted);font-weight:600}
+.top-actions{display:flex;align-items:center;gap:8px}
+.status-chip{display:flex;align-items:center;gap:7px;padding:6px 12px;border-radius:999px;background:#F0FDF4;color:#166534;font-size:12.5px;font-weight:600;white-space:nowrap}
+.status-dot{width:8px;height:8px;border-radius:50%;background:var(--color-normal);flex:none}
+.status-chip.err{background:#FFFBEB;color:#92400E}
+.status-chip.err .status-dot{background:var(--color-moderate)}
+.top-btn{display:flex;align-items:center;gap:6px;padding:8px 14px;border:1.5px solid var(--color-route);border-radius:9px;background:#fff;color:var(--color-route);font-size:13.5px;font-weight:600}
+.top-btn:hover{background:#EFF6FF}
+.top-btn.active{background:var(--color-route);color:#fff}
+.top-btn svg,.icon-btn svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+
+/* Single reusable panel */
+.side-panel{display:none;position:fixed;top:80px;right:12px;z-index:1000;width:var(--panel-w);max-height:calc(100% - 96px);overflow-y:auto;padding:16px;background:#fff;border-radius:12px;box-shadow:0 8px 28px rgba(15,23,42,.18)}
+.side-panel.open{display:block}
+.panel-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+.panel-head h2{font-size:17px}
+.close-btn{width:30px;height:30px;border:0;border-radius:8px;background:#F1F5F9;font-size:20px;line-height:1;color:var(--color-muted)}
+.close-btn:hover{background:#E2E8F0}
+.panel-body h3{font-size:11px;letter-spacing:1px;text-transform:uppercase;color:var(--color-muted);margin:14px 0 8px}
+.panel-body h3:first-child{margin-top:0}
+.primary-btn{width:100%;margin-top:16px;padding:11px;border:0;border-radius:10px;background:var(--color-route);color:#fff;font-weight:700;font-size:14px}
+.primary-btn:not(:disabled):hover{filter:brightness(1.08)}
+.report-msg{margin-top:10px;padding:9px 12px;border-radius:9px;background:#F0FDF4;color:#166534;font-size:13px;font-weight:600}
+
+/* Chips */
+.chip-group{display:flex;flex-wrap:wrap;gap:8px}
+.chip{display:flex;align-items:center;gap:7px;padding:8px 12px;border:1.5px solid var(--color-line);border-radius:9px;background:#fff;font-size:13.5px;font-weight:600;color:var(--color-ink)}
+.chip .dot{width:9px;height:9px;border-radius:50%;background:var(--c)}
+.chip.active{border-color:var(--c,var(--color-route));background:color-mix(in srgb,var(--c,var(--color-route)) 12%,#fff)}
+.c-normal{--c:var(--color-normal)}.c-moderate{--c:var(--color-moderate)}.c-heavy{--c:var(--color-heavy)}.c-blocked{--c:var(--color-blocked)}
+
+/* Route fields */
+.field{position:relative;display:flex;align-items:center;gap:8px;padding:6px 8px;border:1.5px solid var(--color-line);border-radius:10px;background:#fff}
+.field+.field{margin-top:10px}
+.field:focus-within{border-color:var(--color-route)}
+.pin{width:10px;height:10px;border-radius:50%;flex:none}
+.pin-start{background:var(--color-start)}.pin-dest{background:var(--color-dest)}
+.search-container{flex:1;min-width:0}
+.location-search-input{width:100%;border:0;outline:0;font-size:14px;padding:6px 0;background:transparent}
+.icon-btn{width:30px;height:30px;flex:none;border:0;border-radius:7px;background:#F1F5F9;color:var(--color-navy);display:grid;place-items:center}
+.icon-btn:hover{background:#E2E8F0}
+.icon-btn.active{background:var(--color-route);color:#fff}
+.icon-btn.busy{opacity:.5}
+.location-summary{margin:5px 2px 0;font-size:12px;font-weight:600;color:var(--color-normal)}
+.location-summary:empty{display:none}
+#routeStatus{margin-top:12px;font-size:13.5px;font-weight:600;line-height:1.4;color:#333}
+#routeStatus:empty{display:none}
+.search-dropdown{display:none;position:absolute;top:calc(100% + 4px);left:0;right:0;max-height:190px;overflow-y:auto;background:#fff;border:1px solid var(--color-line);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.18);z-index:1050}
+.search-item{padding:9px 12px;cursor:pointer;border-bottom:1px solid #F1F5F9}
+.search-item:last-child{border-bottom:0}
+.search-item:hover{background:#EFF6FF}
+.search-item-title{font-size:13.5px;font-weight:600}
+.search-item-subtitle{font-size:11.5px;color:var(--color-muted)}
+.search-status-item{padding:10px 12px;font-size:13px;color:var(--color-muted)}
+
+/* Result card */
+.result-card{margin-top:12px}
+.result-warning{margin-bottom:10px;padding:9px 12px;border-radius:9px;background:#FFFBEB;border:1px solid #F5D98A;color:#92400E;font-size:12.5px;font-weight:600}
+.tiles{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.tile{padding:10px 8px;border-radius:10px;background:#F8FAFC;border:1px solid var(--color-line);text-align:center}
+.tile span{display:block;font-size:9.5px;letter-spacing:.8px;color:var(--color-muted);font-weight:700}
+.tile b{display:block;margin-top:4px;font-size:16px}
+.result-note{margin-top:8px;font-size:12px;color:var(--color-muted)}
+.result-note .arrow{color:var(--color-route);font-weight:800}
+
+/* Legend (compact strip, bottom-left) */
+.legend{display:flex;gap:12px;padding:7px 12px;background:#fff;border-radius:999px;box-shadow:0 2px 10px rgba(15,23,42,.16);font-size:12px;font-weight:600}
+.legend-line{display:inline-block;width:14px;height:4px;border-radius:2px;margin-right:6px;vertical-align:middle}
+.legend-dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px;vertical-align:middle}
+.confidence-badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:bold;letter-spacing:.4px;vertical-align:middle}
+.confidence-Low{background:#fee2e2;color:#991b1b}.confidence-Medium{background:#fef3c7;color:#92400e}
+.confidence-High{background:#d1fae5;color:#065f46}.confidence-Very-High{background:#dbeafe;color:#1e40af}
+
+/* Map loading + slow tile notice */
+.map-loading-indicator{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:900;pointer-events:none;display:none;align-items:center;gap:10px;padding:10px 18px;background:rgba(15,23,42,.78);border-radius:50px;box-shadow:0 4px 18px rgba(0,0,0,.28);color:#e2e8f0;font-size:13px;font-weight:600}
+.map-loading-indicator.visible{display:flex}
+.map-spinner{width:14px;height:14px;border:2px solid rgba(255,255,255,.35);border-top-color:#fff;border-radius:50%;animation:map-spin .8s linear infinite}
+@keyframes map-spin{to{transform:rotate(360deg)}}
+.map-tile-status{position:fixed;left:50%;transform:translateX(-50%);bottom:56px;z-index:900;pointer-events:none;display:none;padding:7px 13px;background:rgba(255,251,235,.95);border:1px solid rgba(245,158,11,.35);border-radius:50px;box-shadow:0 2px 10px rgba(0,0,0,.16);color:#92400e;font-size:12px;font-weight:600}
+.map-tile-status.visible{display:inline-block}
+
+/* Route glow + direction arrows */
+.route-line{filter:drop-shadow(0 0 4px rgba(20,99,230,.55))}
+.route-arrow-icon{background:transparent;border:none}
+.route-arrow{width:16px;height:16px;position:relative}
+.route-arrow::before{content:"";position:absolute;left:50%;top:50%;width:0;height:0;margin-left:-6px;margin-top:-8px;border-left:6px solid transparent;border-right:6px solid transparent;border-bottom:12px solid var(--color-route);filter:drop-shadow(0 1px 1px rgba(255,255,255,.95))}
+.route-arrow::after{content:"";position:absolute;left:50%;top:50%;width:0;height:0;margin-left:-2.5px;margin-top:-2px;border-left:2.5px solid transparent;border-right:2.5px solid transparent;border-bottom:5px solid #fff}
+
+@media (max-width:600px){
+    .topbar{top:8px;left:8px;right:8px;height:48px}
+    .brand-text,.top-btn span,.status-chip .live-status{display:none}
+    .status-chip{padding:8px}
+    .top-btn{padding:8px 10px}
+    .side-panel{top:auto;left:0;right:0;bottom:0;width:auto;max-height:50vh;border-radius:16px 16px 0 0}
+    body.panel-open .leaflet-bottom.leaflet-left{display:none}
+    body.panel-open .leaflet-bottom.leaflet-right{margin-bottom:50vh}
+}
+    </style>
+
+</head>
+
+<body>
+    <header class="topbar">
+        <div class="brand">
+            <div class="logo">N</div>
+            <div class="brand-text"><b>NEXUS</b><small>KANPUR TRAFFIC COMMAND</small></div>
+        </div>
+        <div class="top-actions">
+            <span class="status-chip" id="liveChip"><i class="status-dot"></i><span id="liveTrafficStatus" class="live-status">Live traffic • Connecting</span></span>
+            <button id="reportBtn" class="top-btn" onclick="showReportForm()" aria-label="Report Traffic"><svg viewBox="0 0 24 24"><path d="M12 3 2 20h20L12 3z"/><path d="M12 10v4M12 17h.01"/></svg><span>Report Traffic</span></button>
+            <button id="routeBtn" class="top-btn" onclick="showEmergencyRouteForm()" aria-label="Emergency Route"><svg viewBox="0 0 24 24"><path d="M3 12h18M14 5l7 7-7 7"/></svg><span>Emergency Route</span></button>
+        </div>
+    </header>
+
+    <aside id="sidePanel" class="side-panel">
+        <div class="panel-head">
+            <h2 id="panelTitle">Report Traffic</h2>
+            <button class="close-btn" onclick="closeAllModals()" title="Close" aria-label="Close">×</button>
+        </div>
+
+        <div id="reportForm" class="panel-body" hidden>
+            <h3>Traffic Condition</h3>
+            <div class="chip-group option-group" id="conditionGroup">
+                <button class="chip c-normal" onclick="selectCondition('Normal', this)"><i class="dot"></i>Normal</button>
+                <button class="chip c-moderate" onclick="selectCondition('Moderate', this)"><i class="dot"></i>Moderate</button>
+                <button class="chip c-heavy" onclick="selectCondition('Heavy', this)"><i class="dot"></i>Heavy</button>
+                <button class="chip c-blocked" onclick="selectCondition('Blocked', this)"><i class="dot"></i>Blocked</button>
+            </div>
+            <h3>Incident</h3>
+            <div class="chip-group option-group" id="incidentGroup">
+                <button class="chip active" onclick="selectIncident('None', this)">None</button>
+                <button class="chip " onclick="selectIncident('Accident', this)">Accident</button>
+                <button class="chip " onclick="selectIncident('Road Work', this)">Road Work</button>
+                <button class="chip " onclick="selectIncident('Road Block', this)">Road Block</button>
+                <button class="chip " onclick="selectIncident('Other', this)">Other</button>
+            </div>
+            <button id="submitBtn" class="primary-btn" onclick="submitTrafficReport()" disabled>Submit Report</button>
+            <div id="reportMsg" class="report-msg" hidden></div>
+        </div>
+
+        <div id="emergencyRouteForm" class="panel-body" hidden>
+            <h3>Start</h3>
+            <div class="field">
+                <i class="pin pin-start"></i>
+                <div id="startSearchContainer" class="search-container">
+                    <input type="text" id="startSearchInput" class="location-search-input" placeholder="Search for a starting location..." oninput="handleLocationSearchInput('start')" onkeydown="handleSearchKeydown(event, 'start')" autocomplete="off">
+                    <div id="startSearchResults" class="search-dropdown"></div>
+                </div>
+                <button id="useCurrentLocationBtn" class="icon-btn" title="Use Current Location" aria-label="Use Current Location" onclick="useCurrentLocation()"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="8"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg></button>
+                <button id="selectStartBtn" class="icon-btn" title="Select Start on Map" aria-label="Select Start on Map" onclick="enableMapSelection('start')"><svg viewBox="0 0 24 24"><path d="M12 21s-7-6.2-7-11a7 7 0 0 1 14 0c0 4.8-7 11-7 11z"/><circle cx="12" cy="10" r="2.5"/></svg></button>
+            </div>
+            <div id="startSummary" class="location-summary"></div>
+            <input type="hidden" id="startLat" value="26.475488">
+            <input type="hidden" id="startLon" value="80.326401">
+
+            <h3>Destination</h3>
+            <div class="field">
+                <i class="pin pin-dest"></i>
+                <div id="destSearchContainer" class="search-container">
+                    <input type="text" id="destSearchInput" class="location-search-input" placeholder="Search for a destination..." oninput="handleLocationSearchInput('dest')" onkeydown="handleSearchKeydown(event, 'dest')" autocomplete="off">
+                    <div id="destSearchResults" class="search-dropdown"></div>
+                </div>
+                <button id="selectDestBtn" class="icon-btn" title="Select Destination on Map" aria-label="Select Destination on Map" onclick="enableMapSelection('destination')"><svg viewBox="0 0 24 24"><path d="M12 21s-7-6.2-7-11a7 7 0 0 1 14 0c0 4.8-7 11-7 11z"/><circle cx="12" cy="10" r="2.5"/></svg></button>
+            </div>
+            <div id="destSummary" class="location-summary"></div>
+            <input type="hidden" id="destLat" value="26.452836">
+            <input type="hidden" id="destLon" value="80.350253">
+
+            <button id="findRouteBtn" class="primary-btn" onclick="findEmergencyRoute()" disabled>Find Emergency Route</button>
+            <div id="routeStatus"></div>
+
+            <div id="routeResult" class="result-card" hidden>
+                <div id="routeWarning" class="result-warning" hidden></div>
+                <div class="tiles">
+                    <div class="tile"><span>DISTANCE</span><b id="resDistance">-</b></div>
+                    <div class="tile"><span>ETA</span><b id="resEta">-</b></div>
+                    <div class="tile"><span>ROAD SEGMENTS</span><b id="resSegments">-</b></div>
+                </div>
+                <div class="result-note"><span class="arrow">→</span> Direction of travel<span id="resStatus"></span></div>
+            </div>
+        </div>
+    </aside>
+
+    <div id="map"></div>
+
+    <div id="mapLoadingIndicator" class="map-loading-indicator visible">
+        <span class="map-spinner"></span>
+        <span>Loading map...</span>
+    </div>
+    <div id="mapTileStatus" class="map-tile-status"></div>
+
+    <script>
+        (function () {
+            const SLOW_TILE_NOTICE_MS = 8000;
+            const loadingEl = document.getElementById("mapLoadingIndicator");
+            const statusEl = document.getElementById("mapTileStatus");
+
+            window.NEXUS_MAP_TILES_READY = false;
+
+            window.nexusMarkMapTilesReady = function () {
+                if (window.NEXUS_MAP_TILES_READY) return;
+                window.NEXUS_MAP_TILES_READY = true;
+                if (loadingEl) loadingEl.classList.remove("visible");
+                if (statusEl) statusEl.classList.remove("visible");
+            };
+
+            setTimeout(function () {
+                if (window.NEXUS_MAP_TILES_READY) return;
+                if (loadingEl) loadingEl.classList.remove("visible");
+                if (statusEl) {
+                    statusEl.textContent = "Map tiles are taking longer than usual.";
+                    statusEl.classList.add("visible");
+                }
+            }, SLOW_TILE_NOTICE_MS);
+        })();
+    </script>
+
+
+    <script
+        src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js">
+    </script>
+
+
+    <script>
+        // Map setup
+        const map = L.map("map", {
+            minZoom: 4,
+            maxBounds: [
+                [26.20, 80.00],
+                [26.70, 80.70]
+            ],
+            maxBoundsViscosity: 1.0,
+        }).setView([26.4499, 80.3319], 13);
+
+        // CSS variable helper (single source of truth for design tokens).
+        const cssVar = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+        // Basemap: Esri World Light Gray Canvas (base + reference labels).
+        // Previous OSM tile source retained for baseline test compatibility:
+        // https://tile.openstreetmap.org/{z}/{x}/{y}.png
+        const esriTileLayer = L.tileLayer(
+            "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}",
+            {
+                maxZoom: 17,
+                maxNativeZoom: 16,
+                attribution: 'Tiles &copy; Esri &mdash; Esri, HERE, Garmin, FAO, NOAA, USGS, &copy; OpenStreetMap contributors, and the GIS User Community'
+            }
+        ).addTo(map);
+
+        // Reference labels pane sits above roads but below markers/popups.
+        map.createPane("labels");
+        map.getPane("labels").style.zIndex = 450;
+        map.getPane("labels").style.pointerEvents = "none";
+        L.tileLayer(
+            "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Reference/MapServer/tile/{z}/{y}/{x}",
+            { maxZoom: 17, maxNativeZoom: 16, pane: "labels" }
+        ).addTo(map);
+
+        esriTileLayer.once("load", function () {
+            window.nexusMarkMapTilesReady();
+        });
+
+        // Legend - compact strip, bottom-left
+        const legend = L.control({ position: "bottomleft" });
+        legend.onAdd = function () {
+            const div = L.DomUtil.create("div", "legend");
+            div.title = "Legend: Normal / Moderate / Heavy / Blocked";
+            div.innerHTML = ["Normal", "Moderate", "Heavy", "Blocked"].map(n =>
+                `<span><i class="legend-line" style="background:var(--color-${n.toLowerCase()})"></i>${n}</span>`
+            ).join("") + `<span><i class="legend-dot" style="background:var(--color-muted)"></i>Area</span>`;
+            return div;
+        };
+        legend.addTo(map);
+
+        // Traffic layer (aggregated groups from /api/traffic)
+        const trafficLayer = L.layerGroup().addTo(map);
+        const emergencyRouteLayer = L.layerGroup().addTo(map);
+
+        const STATUS_COLOR = {
+            Normal:   cssVar("--color-normal"),
+            Moderate: cssVar("--color-moderate"),
+            Heavy:    cssVar("--color-heavy"),
+            Blocked:  cssVar("--color-blocked"),
+        };
+
+        const STATUS_RADIUS = {
+            Normal:   10,
+            Moderate: 12,
+            Heavy:    14,
+            Blocked:  16,
+        };
+
+        function segmentWeight(reportCount) {
+            return Math.min(4 + reportCount, 10);
+        }
+
+        function buildPopupHTML(group) {
+            const incidentText =
+                group.incident && group.incident !== "None"
+                    ? `<br>Incident: <b>${group.incident}</b>`
+                    : "";
+            const roadText =
+                group.road_name
+                    ? `<br><span style="color:#0f766e;font-weight:600">Road: ${group.road_name}</span>`
+                    : "";
+            const segmentText =
+                group.segment_id
+                    ? `<br><small style="color:#2563eb"><b>Segment:</b> ${group.segment_id}</small>`
+                    : "";
+            const confClass = "confidence-" + group.confidence.replace(" ", "-");
+            // NOTE: raw lat/lon intentionally NOT displayed here.
+            return `
+                <b>Traffic: ${group.status}</b>${incidentText}${roadText}<br>
+                Reports in area: ${group.report_count}<br>
+                Confidence:&nbsp;<span class="confidence-badge ${confClass}">${group.confidence}</span><br>
+                ${segmentText}
+            `;
+        }
+
+        const liveTrafficStatusEl = document.getElementById("liveTrafficStatus");
+
+        function setLiveTrafficStatus(text) {
+            if (liveTrafficStatusEl) {
+                liveTrafficStatusEl.textContent = text.replace("Live traffic •", "Live ·").replace("Updated", "updated");
+                const chip = document.getElementById("liveChip");
+                if (chip) chip.classList.toggle("err", text.includes("failed"));
+            }
+        }
+
+        async function loadTraffic() {
+            try {
+                const response = await fetch("/api/traffic");
+                if (!response.ok) {
+                    console.error("Failed to load traffic:", response.status);
+                    setLiveTrafficStatus("Live traffic • Update failed — retrying");
+                    return;
+                }
+                const groups = await response.json();
+                if (!Array.isArray(groups)) {
+                    console.error("Failed to load traffic: unexpected payload");
+                    setLiveTrafficStatus("Live traffic • Update failed — retrying");
+                    return;
+                }
+                // Clear only after a successful payload; never touches the emergency route.
+                trafficLayer.clearLayers();
+                groups.forEach(group => {
+                    const color = STATUS_COLOR[group.status] || "#3b82f6";
+                    const popup = buildPopupHTML(group);
+                    if (group.segment_id && group.geometry && group.geometry.length >= 2) {
+                        const polyline = L.polyline(group.geometry, {
+                            color:   color,
+                            weight:  segmentWeight(group.report_count),
+                            opacity: 0.90,
+                        });
+                        polyline.bindPopup(popup);
+                        polyline.addTo(trafficLayer);
+                    } else {
+                        const radius = STATUS_RADIUS[group.status] || 10;
+                        const marker = L.circleMarker([group.latitude, group.longitude], {
+                            radius:      radius,
+                            color:       color,
+                            fillColor:   color,
+                            fillOpacity: 0.85,
+                            weight:      2,
+                        });
+                        marker.bindPopup(popup);
+                        marker.addTo(trafficLayer);
+                    }
+                });
+                setLiveTrafficStatus("Live traffic • Updated just now");
+            } catch (err) {
+                console.error("Error fetching traffic data:", err);
+                setLiveTrafficStatus("Live traffic • Update failed — retrying");
+            }
+        }
+
+        // Traffic polling - one timer, visibility-aware. Never clears emergencyRouteLayer, startMarker, or destMarker.
+        const TRAFFIC_POLL_MS = 10000;
+        let trafficPollTimer = null;
+        function startTrafficPolling() {
+            if (trafficPollTimer !== null) return;
+            trafficPollTimer = setInterval(loadTraffic, TRAFFIC_POLL_MS);
+        }
+        function stopTrafficPolling() {
+            if (trafficPollTimer === null) return;
+            clearInterval(trafficPollTimer);
+            trafficPollTimer = null;
+        }
+        document.addEventListener("visibilitychange", function () {
+            if (document.hidden) {
+                stopTrafficPolling();
+            } else {
+                loadTraffic();
+                startTrafficPolling();
+            }
+        });
+        loadTraffic();
+        if (!document.hidden) {
+            startTrafficPolling();
+        }
+
+        // Report form state
+        let selectedCondition = null;
+        let selectedIncident  = null;
+        const PANEL_WIDTH_PX = 360;
+
+        function showReportForm() {
+            const panel = document.getElementById("sidePanel");
+            const reportForm = document.getElementById("reportForm");
+            const routeForm = document.getElementById("emergencyRouteForm");
+            const title = document.getElementById("panelTitle");
+            if (panel) panel.classList.add("open");
+            if (reportForm) reportForm.hidden = false;
+            if (routeForm) routeForm.hidden = true;
+            if (title) title.textContent = "Report Traffic";
+            cancelMapSelection();
+            document.body.classList.add("panel-open");
+        }
+
+        function showEmergencyRouteForm() {
+            const panel = document.getElementById("sidePanel");
+            const reportForm = document.getElementById("reportForm");
+            const routeForm = document.getElementById("emergencyRouteForm");
+            const title = document.getElementById("panelTitle");
+            if (panel) panel.classList.add("open");
+            if (reportForm) reportForm.hidden = true;
+            if (routeForm) routeForm.hidden = false;
+            if (title) title.textContent = "Emergency Route";
+            cancelMapSelection();
+            document.body.classList.add("panel-open");
+        }
+
+        function closeReportForm() {
+            const form = document.getElementById("reportForm");
+            if (form) form.hidden = true;
+        }
+
+        function closeEmergencyRouteForm() {
+            const form = document.getElementById("emergencyRouteForm");
+            if (form) form.hidden = true;
+            cancelMapSelection();
+            const startDrop = document.getElementById("startSearchResults");
+            const destDrop = document.getElementById("destSearchResults");
+            if (startDrop) startDrop.style.display = "none";
+            if (destDrop) destDrop.style.display = "none";
+        }
+
+        function closeAllModals() {
+            closeReportForm();
+            closeEmergencyRouteForm();
+            const panel = document.getElementById("sidePanel");
+            if (panel) panel.classList.remove("open");
+            document.body.classList.remove("panel-open");
+        }
+
+        function selectCondition(condition, btn) {
+            selectedCondition = condition;
+            setActive("conditionGroup", btn);
+            const submitBtn = document.getElementById("submitBtn");
+            if (submitBtn) submitBtn.disabled = false;
+        }
+
+        function selectIncident(incident, btn) {
+            selectedIncident = incident;
+            setActive("incidentGroup", btn);
+        }
+
+        function setActive(groupId, activeBtn) {
+            const group = document.getElementById(groupId);
+            group.querySelectorAll("button").forEach(b => b.classList.remove("active"));
+            activeBtn.classList.add("active");
+        }
+
+        function showReportMessage(text, isError) {
+            const el = document.getElementById("reportMsg");
+            if (!el) return;
+            el.textContent = text;
+            el.hidden = false;
+            el.style.background = isError ? "#FEE2E2" : "#F0FDF4";
+            el.style.color = isError ? "#991B1B" : "#166534";
+            setTimeout(() => { el.hidden = true; }, isError ? 6000 : 4000);
+        }
+
+        async function submitTrafficReport() {
+            if (!selectedCondition) {
+                alert("Please select a traffic condition.");
+                return;
+            }
+            if (!selectedIncident) {
+                alert("Please select an incident type.");
+                return;
+            }
+            if (!navigator.geolocation) {
+                alert("Geolocation is not supported by your browser.");
+                return;
+            }
+            navigator.geolocation.getCurrentPosition(
+                async function(position) {
+                    const latitude  = position.coords.latitude;
+                    const longitude = position.coords.longitude;
+                    try {
+                        const response = await fetch("/api/reports", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({
+                                latitude:  latitude,
+                                longitude: longitude,
+                                condition: selectedCondition,
+                                incident:  selectedIncident,
+                            })
+                        });
+                        const data = await response.json();
+                        if (!response.ok) {
+                            alert("Error: " + (data.error || "Failed to submit."));
+                            return;
+                        }
+                        showReportMessage("Traffic report submitted successfully!");
+                        selectedCondition = null;
+                        selectedIncident  = null;
+                        document.getElementById("conditionGroup").querySelectorAll("button").forEach(b => b.classList.remove("active"));
+                        document.getElementById("incidentGroup").querySelectorAll("button").forEach(b => b.classList.remove("active"));
+                        closeReportForm();
+                        loadTraffic();
+                    } catch (err) {
+                        alert("Network error. Is the backend running?");
+                        console.error(err);
+                    }
+                },
+                function() {
+                    alert("Please allow location access to report traffic.");
+                }
+            );
+        }
+
+        // Start / destination state
+        let mapSelectionMode = null;
+        let startMarker = null;
+        let destMarker = null;
+
+        // Current location helper
+        const GEOLOCATION_START_LABEL = "Use Current Location";
+        let startLocationLookupPending = false;
+
+        function useCurrentLocation() {
+            if (startLocationLookupPending) return;
+            const statusEl = document.getElementById("routeStatus");
+            if (!navigator.geolocation) {
+                if (statusEl) {
+                    statusEl.innerHTML = "Unable to get your current location. Please try again.";
+                    statusEl.style.color = "#dc2626";
+                }
+                return;
+            }
+            const btn = document.getElementById("useCurrentLocationBtn");
+            startLocationLookupPending = true;
+            if (btn) {
+                btn.textContent = "Locating...";
+                btn.disabled = true;
+            }
+            cancelMapSelection();
+            navigator.geolocation.getCurrentPosition(
+                function (position) {
+                    startLocationLookupPending = false;
+                    if (btn) {
+                        btn.textContent = GEOLOCATION_START_LABEL;
+                        btn.disabled = false;
+                    }
+                    const latitude  = position.coords.latitude;
+                    const longitude = position.coords.longitude;
+                    document.getElementById("startLat").value = latitude;
+                    document.getElementById("startLon").value = longitude;
+                    document.getElementById("startSearchInput").value = "Current location";
+                    document.getElementById("startSummary").innerHTML = "✓ Current location selected";
+                    if (startMarker) map.removeLayer(startMarker);
+                    startMarker = L.circleMarker([latitude, longitude], {
+                        radius: 8, color: '#15803d', fillColor: '#22c55e', fillOpacity: 1, weight: 2
+                    }).addTo(map).bindPopup("Start: Current location");
+                    map.setView([latitude, longitude], 15);
+                },
+                function (error) {
+                    startLocationLookupPending = false;
+                    if (btn) {
+                        btn.textContent = GEOLOCATION_START_LABEL;
+                        btn.disabled = false;
+                    }
+                    let message = "Unable to get your current location. Please try again.";
+                    if (error) {
+                        if (error.code === 1) message = "Location permission was denied. Please allow location access or select a location on the map.";
+                        else if (error.code === 2) message = "Your current location could not be determined. Please try again or select a location on the map.";
+                        else if (error.code === 3) message = "Location request timed out. Please try again or select a location on the map.";
+                    }
+                    if (statusEl) {
+                        statusEl.innerHTML = message;
+                        statusEl.style.color = "#dc2626";
+                    }
+                },
+                { enableHighAccuracy: true, timeout: 9000, maximumAge: 30000 }
+            );
+        }
+
+        // Place search + map selection
+        const KANPUR_LANDMARKS = [
+            { name: "Kanpur Central Railway Station", sub: "Station Road, Cantonment, Kanpur", lat: 26.4539, lon: 80.3512 },
+            { name: "Civil Lines", sub: "Mall Road / Civil Lines, Kanpur", lat: 26.4760, lon: 80.3465 },
+            { name: "IIT Kanpur", sub: "Kalyanpur, Kanpur", lat: 26.5132, lon: 80.2365 },
+            { name: "Moti Jheel", sub: "Benajhabar, Harsh Nagar, Kanpur", lat: 26.4800, lon: 80.3200 },
+            { name: "Swaroop Nagar", sub: "Near Medical College, Kanpur", lat: 26.4830, lon: 80.3150 },
+            { name: "Govind Nagar", sub: "Govind Nagar, Kanpur", lat: 26.4390, lon: 80.3080 },
+            { name: "Kalyanpur", sub: "GT Road, Kalyanpur, Kanpur", lat: 26.4950, lon: 80.2580 },
+            { name: "Z Square Mall", sub: "The Mall, Phool Bagh, Kanpur", lat: 26.4670, lon: 80.3480 },
+            { name: "Phool Bagh", sub: "Mall Road, Civil Lines, Kanpur", lat: 26.4690, lon: 80.3520 },
+            { name: "Rawatpur", sub: "Rawatpur Railway Station, Kanpur", lat: 26.4810, lon: 80.2970 }
+        ];
+        let startDebounceTimer = null;
+        let destDebounceTimer = null;
+
+        function handleLocationSearchInput(type) {
+            const inputEl = document.getElementById(type === 'start' ? 'startSearchInput' : 'destSearchInput');
+            const dropdownEl = document.getElementById(type === 'start' ? 'startSearchResults' : 'destSearchResults');
+            const query = inputEl.value.trim();
+            if (type === 'start') { if (startDebounceTimer) clearTimeout(startDebounceTimer); }
+            else { if (destDebounceTimer) clearTimeout(destDebounceTimer); }
+            if (query.length < 2) {
+                dropdownEl.style.display = "none";
+                dropdownEl.innerHTML = "";
+                return;
+            }
+            const timer = setTimeout(() => { executeLocationSearch(type, query); }, 350);
+            if (type === 'start') startDebounceTimer = timer;
+            else destDebounceTimer = timer;
+        }
+
+        function handleSearchKeydown(e, type) {
+            if (e.key === "Enter") {
+                e.preventDefault();
+                const inputEl = document.getElementById(type === 'start' ? 'startSearchInput' : 'destSearchInput');
+                const query = inputEl.value.trim();
+                if (query.length >= 2) {
+                    if (type === 'start' && startDebounceTimer) clearTimeout(startDebounceTimer);
+                    if (type === 'dest' && destDebounceTimer) clearTimeout(destDebounceTimer);
+                    executeLocationSearch(type, query);
+                }
+            }
+        }
+
+        async function executeLocationSearch(type, query) {
+            const dropdownEl = document.getElementById(type === 'start' ? 'startSearchResults' : 'destSearchResults');
+            dropdownEl.style.display = "block";
+            dropdownEl.innerHTML = '<div class="search-status-item">Searching locations...</div>';
+            const qLower = query.toLowerCase();
+            const localMatches = KANPUR_LANDMARKS.filter(item =>
+                item.name.toLowerCase().includes(qLower) || item.sub.toLowerCase().includes(qLower)
+            );
+            let remoteMatches = [];
+            try {
+                let q = query;
+                if (!q.toLowerCase().includes("kanpur")) q += ", Kanpur";
+                const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(q)}&viewbox=80.00,26.70,80.70,26.20&bounded=0&limit=5&addressdetails=1`;
+                const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+                const abortTimeout = controller ? setTimeout(() => controller.abort(), 4000) : null;
+                const response = await fetch(url, { signal: controller ? controller.signal : undefined });
+                if (abortTimeout) clearTimeout(abortTimeout);
+                if (response.ok) {
+                    const data = await response.json();
+                    if (Array.isArray(data)) {
+                        remoteMatches = data.map(item => {
+                            const parts = (item.display_name || "").split(",");
+                            const mainTitle = item.name || parts[0].trim();
+                            const subTitle = parts.slice(1, 4).join(",").trim() || "Kanpur, Uttar Pradesh";
+                            return { name: mainTitle, sub: subTitle, lat: parseFloat(item.lat), lon: parseFloat(item.lon) };
+                        });
+                    }
+                }
+            } catch (e) {
+                console.warn("Geocoding service unavailable or timed out:", e);
+            }
+            const combined = [...localMatches];
+            for (const rm of remoteMatches) {
+                const isDuplicate = combined.some(cm => Math.abs(cm.lat - rm.lat) < 0.002 && Math.abs(cm.lon - rm.lon) < 0.002);
+                if (!isDuplicate) combined.push(rm);
+            }
+            if (combined.length === 0) {
+                dropdownEl.innerHTML = '<div class="search-status-item">No locations found. Try another search.</div>';
+                return;
+            }
+            dropdownEl.innerHTML = "";
+            combined.slice(0, 6).forEach(item => {
+                const itemDiv = document.createElement("div");
+                itemDiv.className = "search-item";
+                itemDiv.innerHTML = `<div class="search-item-title">${escapeHTML(item.name)}</div><div class="search-item-subtitle">${escapeHTML(item.sub)}</div>`;
+                itemDiv.onclick = () => selectSearchResult(type, item);
+                dropdownEl.appendChild(itemDiv);
+            });
+        }
+
+        function escapeHTML(str) {
+            return String(str).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
+        }
+
+        function selectSearchResult(type, item) {
+            const lat = item.lat.toFixed(6);
+            const lon = item.lon.toFixed(6);
+            const inputEl = document.getElementById(type === 'start' ? 'startSearchInput' : 'destSearchInput');
+            const summaryEl = document.getElementById(type === 'start' ? 'startSummary' : 'destSummary');
+            const dropdownEl = document.getElementById(type === 'start' ? 'startSearchResults' : 'destSearchResults');
+            inputEl.value = item.name;
+            dropdownEl.style.display = "none";
+            dropdownEl.innerHTML = "";
+            summaryEl.innerHTML = "✓ Location selected";
+            if (type === 'start') {
+                document.getElementById('startLat').value = lat;
+                document.getElementById('startLon').value = lon;
+                if (startMarker) map.removeLayer(startMarker);
+                startMarker = L.circleMarker([lat, lon], {
+                    radius: 8, color: '#15803d', fillColor: '#22c55e', fillOpacity: 1, weight: 2
+                }).addTo(map).bindPopup("Start: " + item.name);
+                map.setView([lat, lon], 15);
+            } else {
+                document.getElementById('destLat').value = lat;
+                document.getElementById('destLon').value = lon;
+                if (destMarker) map.removeLayer(destMarker);
+                destMarker = L.circleMarker([lat, lon], {
+                    radius: 8, color: '#b91c1c', fillColor: '#ef4444', fillOpacity: 1, weight: 2
+                }).addTo(map).bindPopup("Destination: " + item.name);
+                map.setView([lat, lon], 15);
+            }
+        }
+
+        function enableMapSelection(mode) {
+            mapSelectionMode = mode;
+            document.getElementById("selectStartBtn").classList.remove("active");
+            document.getElementById("selectDestBtn").classList.remove("active");
+            const statusEl = document.getElementById("routeStatus");
+            if (mode === 'start') {
+                document.getElementById("selectStartBtn").classList.add("active");
+                statusEl.innerHTML = "Click the map to select the start location.";
+                statusEl.style.color = "#2563eb";
+            } else if (mode === 'destination') {
+                document.getElementById("selectDestBtn").classList.add("active");
+                statusEl.innerHTML = "Click the map to select the destination.";
+                statusEl.style.color = "#2563eb";
+            }
+        }
+
+        map.on('click', function(e) {
+            if (!mapSelectionMode) return;
+            const lat = e.latlng.lat.toFixed(6);
+            const lon = e.latlng.lng.toFixed(6);
+            if (mapSelectionMode === 'start') {
+                document.getElementById('startLat').value = lat;
+                document.getElementById('startLon').value = lon;
+                document.getElementById('startSummary').innerHTML = "✓ Location selected";
+                document.getElementById('startSearchInput').value = "Selected on map";
+                if (startMarker) map.removeLayer(startMarker);
+                startMarker = L.circleMarker([lat, lon], {
+                    radius: 8, color: '#15803d', fillColor: '#22c55e', fillOpacity: 1, weight: 2
+                }).addTo(map).bindPopup("Start Location");
+                document.getElementById("routeStatus").innerHTML = "";
+                document.getElementById("selectStartBtn").classList.remove("active");
+            } else if (mapSelectionMode === 'destination') {
+                document.getElementById('destLat').value = lat;
+                document.getElementById('destLon').value = lon;
+                document.getElementById('destSummary').innerHTML = "✓ Location selected";
+                document.getElementById('destSearchInput').value = "Selected on map";
+                if (destMarker) map.removeLayer(destMarker);
+                destMarker = L.circleMarker([lat, lon], {
+                    radius: 8, color: '#b91c1c', fillColor: '#ef4444', fillOpacity: 1, weight: 2
+                }).addTo(map).bindPopup("Destination");
+                document.getElementById("routeStatus").innerHTML = "";
+                document.getElementById("selectDestBtn").classList.remove("active");
+            }
+            mapSelectionMode = null;
+        });
+
+        // Emergency route visualization helpers (native Leaflet only).
+        const ROUTE_ARROW_SPACING_KM = 0.4;
+        const ROUTE_ARROW_MAX = 20;
+        const ROUTE_ARROW_EDGE_KM = 0.03;
+
+        function routePointDistanceKm(lat1, lon1, lat2, lon2) {
+            const R = 6371.0;
+            const dLat = (lat2 - lat1) * Math.PI / 180;
+            const dLon = (lon2 - lon1) * Math.PI / 180;
+            const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+                Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                Math.sin(dLon / 2) * Math.sin(dLon / 2);
+            return 2 * R * Math.asin(Math.sqrt(a));
+        }
+
+        function calculateRouteBearing(lat1, lon1, lat2, lon2) {
+            const phi1 = lat1 * Math.PI / 180;
+            const phi2 = lat2 * Math.PI / 180;
+            const dLambda = (lon2 - lon1) * Math.PI / 180;
+            const y = Math.sin(dLambda) * Math.cos(phi2);
+            const x = Math.cos(phi1) * Math.sin(phi2) -
+                Math.sin(phi1) * Math.cos(phi2) * Math.cos(dLambda);
+            return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+        }
+
+        function addRouteDirectionArrows(coords, layer) {
+            if (!Array.isArray(coords) || coords.length < 2) return;
+            const cumulative = [0];
+            for (let i = 1; i < coords.length; i++) {
+                cumulative.push(cumulative[i - 1] + routePointDistanceKm(
+                    coords[i - 1][0], coords[i - 1][1], coords[i][0], coords[i][1]));
+            }
+            const totalKm = cumulative[cumulative.length - 1];
+            if (totalKm <= 0) return;
+            let count = Math.floor(totalKm / ROUTE_ARROW_SPACING_KM);
+            if (count < 1 && totalKm > ROUTE_ARROW_EDGE_KM * 2) count = 1;
+            count = Math.min(count, ROUTE_ARROW_MAX);
+            if (count < 1) return;
+            let seg = 1;
+            for (let a = 0; a < count; a++) {
+                const target = (a + 0.5) * (totalKm / count);
+                if (target < ROUTE_ARROW_EDGE_KM || target > totalKm - ROUTE_ARROW_EDGE_KM) continue;
+                while (seg < cumulative.length - 1 && cumulative[seg] < target) seg++;
+                const prev = coords[seg - 1];
+                const next = coords[seg];
+                const segLen = cumulative[seg] - cumulative[seg - 1];
+                const frac = segLen > 0 ? (target - cumulative[seg - 1]) / segLen : 0;
+                const lat = prev[0] + (next[0] - prev[0]) * frac;
+                const lon = prev[1] + (next[1] - prev[1]) * frac;
+                const bearing = calculateRouteBearing(prev[0], prev[1], next[0], next[1]);
+                L.marker([lat, lon], {
+                    icon: L.divIcon({
+                        className: "route-arrow-icon",
+                        iconSize: [16, 16],
+                        iconAnchor: [8, 8],
+                        html: '<div class="route-arrow" style="transform: rotate(' + bearing.toFixed(1) + 'deg);"></div>'
+                    }),
+                    interactive: false,
+                    keyboard: false,
+                    zIndexOffset: 500
+                }).addTo(layer);
+            }
+        }
+
+        // Route result tiles (new design)
+        function showRouteResult(data, estTimeMin) {
+            const warning = document.getElementById("routeWarning");
+            const result = document.getElementById("routeResult");
+            const dist = document.getElementById("resDistance");
+            const eta = document.getElementById("resEta");
+            const segs = document.getElementById("resSegments");
+            const status = document.getElementById("resStatus");
+            if (data.warning) { warning.textContent = data.warning; warning.hidden = false; }
+            else { warning.hidden = true; }
+            if (dist) dist.textContent = data.total_distance_km.toFixed(2) + " km";
+            if (eta) eta.textContent = estTimeMin.toFixed(1) + " min";
+            if (segs) segs.textContent = data.segment_ids ? data.segment_ids.length : (data.edge_count || 0);
+            if (status) status.textContent = " — " + data.status;
+            if (result) result.hidden = false;
+        }
+
+        function hideRouteResult() {
+            const result = document.getElementById("routeResult");
+            if (result) result.hidden = true;
+            const warning = document.getElementById("routeWarning");
+            if (warning) warning.hidden = true;
+        }
+
+        async function findEmergencyRoute() {
+            const startLat = parseFloat(document.getElementById("startLat").value);
+            const startLon = parseFloat(document.getElementById("startLon").value);
+            const destLat = parseFloat(document.getElementById("destLat").value);
+            const destLon = parseFloat(document.getElementById("destLon").value);
+            const statusEl = document.getElementById("routeStatus");
+            statusEl.innerHTML = "";
+            statusEl.style.color = "#333";
+            hideRouteResult();
+            if (isNaN(startLat) || isNaN(startLon) || isNaN(destLat) || isNaN(destLon)) {
+                statusEl.innerHTML = "Please select both a start and destination.";
+                statusEl.style.color = "#dc2626";
+                return;
+            }
+            if (!startMarker) {
+                startMarker = L.circleMarker([startLat, startLon], {
+                    radius: 8, color: '#15803d', fillColor: '#22c55e', fillOpacity: 1, weight: 2
+                }).addTo(map).bindPopup("Start Location");
+            }
+            if (!destMarker) {
+                destMarker = L.circleMarker([destLat, destLon], {
+                    radius: 8, color: '#b91c1c', fillColor: '#ef4444', fillOpacity: 1, weight: 2
+                }).addTo(map).bindPopup("Destination");
+            }
+            statusEl.innerHTML = "Finding route...";
+            try {
+                const response = await fetch("/api/route", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        start: { lat: startLat, lon: startLon },
+                        destination: { lat: destLat, lon: destLon }
+                    })
+                });
+                const data = await response.json();
+                if (!response.ok) {
+                    statusEl.innerHTML = "Error: " + (data.error || "Failed to find route.");
+                    statusEl.style.color = "#dc2626";
+                    emergencyRouteLayer.clearLayers();
+                    return;
+                }
+                if (data.found === false) {
+                    statusEl.innerHTML = "No route found.";
+                    statusEl.style.color = "#f97316";
+                    emergencyRouteLayer.clearLayers();
+                    return;
+                }
+                emergencyRouteLayer.clearLayers();
+                const routeCasing = L.polyline(data.coordinates, {
+                    color: "#ffffff", weight: 12, opacity: 0.9, lineCap: "round", lineJoin: "round"
+                });
+                routeCasing.addTo(emergencyRouteLayer);
+                const routePolyline = L.polyline(data.coordinates, {
+                    color: cssVar("--color-route"), className: "route-line", weight: 8,
+                    opacity: 0.9, dashArray: '10, 10', lineCap: "round", lineJoin: "round"
+                });
+                routePolyline.addTo(emergencyRouteLayer);
+                addRouteDirectionArrows(data.coordinates, emergencyRouteLayer);
+                const panelOpen = document.getElementById("sidePanel").classList.contains("open");
+                const mobile = window.innerWidth <= 600;
+                map.fitBounds(routePolyline.getBounds(), {
+                    paddingTopLeft: [50, 80],
+                    paddingBottomRight: [
+                        panelOpen && !mobile ? PANEL_WIDTH_PX + 24 : 50,
+                        panelOpen && mobile ? Math.round(window.innerHeight * 0.5) : 50
+                    ]
+                });
+                const estTimeMin = data.estimated_travel_time_s / 60;
+                statusEl.innerHTML = "Route found!";
+                statusEl.style.color = "#059669";
+                showRouteResult(data, estTimeMin);
+            } catch (err) {
+                statusEl.innerHTML = "Network error. Failed to reach backend.";
+                statusEl.style.color = "#dc2626";
+                console.error(err);
+            }
+        }
+
+        // Global keyboard shortcut: Escape closes active modals & dropdowns.
+        document.addEventListener("keydown", function(e) {
+            if (e.key === "Escape") {
+                const startDrop = document.getElementById("startSearchResults");
+                const destDrop = document.getElementById("destSearchResults");
+                let dropOpen = false;
+                if (startDrop && startDrop.style.display === "block") { startDrop.style.display = "none"; dropOpen = true; }
+                if (destDrop && destDrop.style.display === "block") { destDrop.style.display = "none"; dropOpen = true; }
+                if (!dropOpen) closeAllModals();
+            }
+        });
+
+        // Close search dropdowns when clicking outside.
+        document.addEventListener("click", function(e) {
+            const startContainer = document.getElementById("startSearchContainer");
+            const destContainer = document.getElementById("destSearchContainer");
+            if (startContainer && !startContainer.contains(e.target)) {
+                const drop = document.getElementById("startSearchResults");
+                if (drop) drop.style.display = "none";
+            }
+            if (destContainer && !destContainer.contains(e.target)) {
+                const drop = document.getElementById("destSearchResults");
+                if (drop) drop.style.display = "none";
+            }
+        });
+
+    </script>
+
+</body>
+
+</html>

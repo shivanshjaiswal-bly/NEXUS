@@ -1,0 +1,43 @@
+﻿# Python virtual environments
+venv/
+.venv/
+
+# Python cache and test artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Frontend dependencies and build output
+node_modules/
+frontend/node_modules/
+frontend/dist/
+
+# Local editor configuration
+.vscode/
+
+# Generated logs and old test outputs
+*.log
+test_err.txt
+test_out.txt
+test_output.txt
+
+# Backup archives
+*.zip
+
+# Operating system files
+.DS_Store
+Thumbs.db
+
+# Backup copies
+data/*.bak
