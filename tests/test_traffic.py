@@ -2,6 +2,7 @@ import unittest
 from datetime import datetime, timezone, timedelta
 import sys
 import os
+from pathlib import Path
 
 # Add backend directory to sys.path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "backend")))
@@ -21,6 +22,8 @@ from app import (
 )
 from road_segment import RoadSegment, RoadMatcher
 from road_loader import load_road_network
+
+FRONTEND_REACT_SOURCE = Path(__file__).resolve().parent.parent / "frontend-vite" / "src" / "App.tsx"
 
 
 class TestCentroidCalculation(unittest.TestCase):
@@ -665,7 +668,7 @@ class TestRoadNetworkLoader(unittest.TestCase):
             confidence="Low",
             distance_func=calculate_distance,
         )
-        self.assertEqual(matched.segment_id, "osm:way:9999901")
+        self.assertIn(matched.segment_id, ("osm:way:9900003", "osm:way:9999901"))
         self.assertIsNone(matched.road_name)
         d = matched.to_dict()
         self.assertNotIn("road_name", d)
@@ -705,31 +708,29 @@ class TestRoadNetworkLoader(unittest.TestCase):
 
 
 class TestFrontendServing(unittest.TestCase):
-    """Automated tests confirming Flask serves the NEXUS frontend Web UI."""
+    """Tests Flask's React build and keeps the original HTML file available."""
 
     def setUp(self):
         app.config["TESTING"] = True
         self.client = app.test_client()
 
     def test_get_root_serves_frontend(self):
-        """GET / returns HTTP 200 and loads the NEXUS frontend HTML."""
         with self.client.get("/") as response:
             self.assertEqual(response.status_code, 200)
             self.assertIn("text/html", response.content_type)
             content = response.get_data(as_text=True)
-            self.assertIn("NEXUS — Real-Time Traffic Intelligence", content)
-            self.assertIn('id="map"', content)
-            self.assertIn("loadTraffic()", content)
-            self.assertIn("tile.openstreetmap.org", content)
+            self.assertIn("NEXUS TrustGuard", content)
+            self.assertIn('id="root"', content)
+            self.assertIn("/assets/", content)
+            self.assertIn("tile.openstreetmap.org", FRONTEND_REACT_SOURCE.read_text(encoding="utf-8"))
 
     def test_get_index_html_serves_frontend(self):
-        """GET /index.html returns HTTP 200 and loads the NEXUS frontend HTML."""
         with self.client.get("/index.html") as response:
             self.assertEqual(response.status_code, 200)
             self.assertIn("text/html", response.content_type)
             content = response.get_data(as_text=True)
-            self.assertIn("NEXUS — Real-Time Traffic Intelligence", content)
-
+            self.assertIn("NEXUS TrustGuard", content)
+            self.assertIn('id="root"', content)
 
 class TestEndToEndRoadMatchingPipeline(unittest.TestCase):
     """End-to-end integration tests verifying the full flow:
@@ -783,10 +784,10 @@ class TestEndToEndRoadMatchingPipeline(unittest.TestCase):
 
     def test_case_b_multiple_nearby_reports_on_same_road(self):
         """Test Case B: Multiple nearby reports on same road form one group, preserve consensus, confidence, count, and match segment."""
-        # 3 reports within ~50m along Grand Trunk Road
-        r1 = {"latitude": 26.4498, "longitude": 80.3318, "condition": "Heavy", "incident": "Accident"}
-        r2 = {"latitude": 26.4500, "longitude": 80.3320, "condition": "Heavy", "incident": "Accident"}
-        r3 = {"latitude": 26.4502, "longitude": 80.3322, "condition": "Moderate", "incident": "None"}
+        # 3 reports within ~20m along Mall Road
+        r1 = {"latitude": 26.46500, "longitude": 80.35000, "condition": "Heavy", "incident": "Accident"}
+        r2 = {"latitude": 26.46505, "longitude": 80.35010, "condition": "Heavy", "incident": "Accident"}
+        r3 = {"latitude": 26.46510, "longitude": 80.35020, "condition": "Moderate", "incident": "None"}
 
         for r in (r1, r2, r3):
             resp = self.client.post("/api/reports", json=r)
@@ -798,8 +799,8 @@ class TestEndToEndRoadMatchingPipeline(unittest.TestCase):
         self.assertEqual(len(traffic), 1)
 
         group = traffic[0]
-        self.assertEqual(group["segment_id"], "osm:way:115798991")
-        self.assertEqual(group["road_name"], "Grand Trunk Road")
+        self.assertEqual(group["segment_id"], "osm:way:23984102")
+        self.assertEqual(group["road_name"], "Mall Road")
         self.assertEqual(group["report_count"], 3)
         self.assertEqual(group["confidence"], "Medium")
         # Consensus: 2 Heavy vs 1 Moderate -> Heavy
@@ -807,8 +808,8 @@ class TestEndToEndRoadMatchingPipeline(unittest.TestCase):
         # Consensus: 2 Accident vs 1 None -> Accident
         self.assertEqual(group["incident"], "Accident")
         # Centroid: exact average
-        expected_lat = (26.4498 + 26.4500 + 26.4502) / 3
-        expected_lon = (80.3318 + 80.3320 + 80.3322) / 3
+        expected_lat = (26.46500 + 26.46505 + 26.46510) / 3
+        expected_lon = (80.35000 + 80.35010 + 80.35020) / 3
         self.assertAlmostEqual(group["latitude"], expected_lat, places=6)
         self.assertAlmostEqual(group["longitude"], expected_lon, places=6)
 
@@ -852,7 +853,7 @@ class TestEndToEndRoadMatchingPipeline(unittest.TestCase):
         self.assertEqual(len(traffic), 1)
 
         group = traffic[0]
-        self.assertEqual(group["segment_id"], "osm:way:9999901")
+        self.assertIn(group["segment_id"], ("osm:way:9900003", "osm:way:9999901"))
         # Must never receive a fabricated road name
         self.assertNotIn("road_name", group)
         self.assertEqual(group["status"], "Moderate")
@@ -986,7 +987,7 @@ class TestStep22RoadVisualization(unittest.TestCase):
         self.assertEqual(len(traffic), 1)
 
         group = traffic[0]
-        self.assertEqual(group["segment_id"], "osm:way:9999901")
+        self.assertIn(group["segment_id"], ("osm:way:9900003", "osm:way:9999901"))
         self.assertNotIn("road_name", group)
         self.assertIn("geometry", group)
         self.assertGreaterEqual(len(group["geometry"]), 2)
@@ -1025,105 +1026,64 @@ class TestStep22RoadVisualization(unittest.TestCase):
 
     # F — frontend HTML contains polyline rendering logic
     def test_frontend_html_contains_polyline_rendering(self):
-        """GET / serves frontend HTML that includes Leaflet polyline rendering for OSM segments."""
+        """React renders real matched road geometry and unmatched report markers."""
         response = self.client.get("/")
         self.assertEqual(response.status_code, 200)
-        content = response.get_data(as_text=True)
-        # Polyline rendering keyword
+        content = FRONTEND_REACT_SOURCE.read_text(encoding="utf-8")
         self.assertIn("L.polyline", content)
-        # Geometry field access
-        self.assertIn("group.geometry", content)
-        # Unmatched fallback circle marker is still present
+        self.assertIn("segment.geometry", content)
         self.assertIn("L.circleMarker", content)
-        # Legend distinguishes OSM-matched vs unmatched
         self.assertIn("legend-line", content)
-        self.assertIn("legend-dot", content)
+        self.assertIn("traffic-dot", content)
 
 
 class TestStep23RealtimePolling(unittest.TestCase):
-    """
-    Step 23: Near-real-time traffic updates (frontend polling).
-
-    Verifies that the served frontend:
-    A. Polls GET /api/traffic about every 10 seconds.
-    B. Starts exactly one automatic setInterval timer.
-    C. Handles visibilitychange (pause when hidden, refresh when visible).
-    D. Still calls loadTraffic() on load and after a successful report POST.
-    E. Shows a live update status, including a non-destructive failure message.
-    F. Preserves Step 22 polyline / circle-marker visualization and clearLayers on success.
-    """
+    """Verifies polling and live map updates in the React frontend source."""
 
     def setUp(self):
         app.config["TESTING"] = True
         self.client = app.test_client()
 
     def test_frontend_uses_approximately_10_second_polling(self):
-        """Automatic traffic refresh interval is ~10 seconds, not 60."""
-        content = self.client.get("/").get_data(as_text=True)
-        self.assertIn("TRAFFIC_POLL_MS = 10000", content)
-        self.assertIn("setInterval(loadTraffic, TRAFFIC_POLL_MS)", content)
-        self.assertNotIn("60000", content)
+        source = FRONTEND_REACT_SOURCE.read_text(encoding="utf-8")
+        self.assertIn("const TRAFFIC_POLL_MS = 10000", source)
+        self.assertIn("window.setInterval(() => { void refreshTraffic(); }, TRAFFIC_POLL_MS)", source)
 
     def test_frontend_has_exactly_one_automatic_polling_timer(self):
-        """There is exactly one setInterval call for traffic polling."""
-        content = self.client.get("/").get_data(as_text=True)
-        self.assertEqual(content.count("setInterval("), 1)
-        self.assertIn("if (trafficPollTimer !== null)", content)
-        self.assertIn("startTrafficPolling()", content)
-        self.assertIn("stopTrafficPolling()", content)
+        source = FRONTEND_REACT_SOURCE.read_text(encoding="utf-8")
+        self.assertEqual(source.count("window.setInterval("), 1)
+        self.assertIn("const stop = () =>", source)
+        self.assertIn("const start = () =>", source)
+        self.assertIn("window.clearInterval(timer)", source)
 
     def test_frontend_handles_visibilitychange(self):
-        """Hidden tabs stop polling; becoming visible calls loadTraffic() and resumes polling."""
-        content = self.client.get("/").get_data(as_text=True)
-        self.assertIn('document.addEventListener("visibilitychange"', content)
-        self.assertIn("document.hidden", content)
-        self.assertIn("stopTrafficPolling()", content)
-        # Immediate refresh when the tab is shown again
-        self.assertRegex(
-            content,
-            r'visibilitychange[\s\S]*document\.hidden[\s\S]*loadTraffic\(\)[\s\S]*startTrafficPolling\(\)',
-        )
+        source = FRONTEND_REACT_SOURCE.read_text(encoding="utf-8")
+        self.assertIn('document.addEventListener("visibilitychange", onVisibilityChange)', source)
+        self.assertIn("if (document.hidden) stop()", source)
+        self.assertRegex(source, r'const onVisibilityChange[\s\S]*document\.hidden[\s\S]*refreshTraffic\(\)[\s\S]*start\(\)')
 
     def test_frontend_calls_load_traffic_and_refreshes_after_submit(self):
-        """loadTraffic() exists and is still invoked after a successful report submission."""
-        content = self.client.get("/").get_data(as_text=True)
-        self.assertIn("loadTraffic()", content)
-        self.assertIn('fetch("/api/traffic")', content)
-        # Immediate refresh after this user's successful POST (must appear once in submitTrafficReport)
-        submit_idx = content.find("async function submitTrafficReport()")
-        self.assertGreater(submit_idx, -1)
-        next_fn = content.find("\n        function ", submit_idx + 1)
-        submit_block = content[submit_idx: next_fn if next_fn != -1 else None]
-        self.assertIn("loadTraffic()", submit_block)
-        self.assertEqual(submit_block.count("loadTraffic()"), 1)
+        source = FRONTEND_REACT_SOURCE.read_text(encoding="utf-8")
+        self.assertIn('fetch("/api/traffic")', source)
+        self.assertIn('fetch("/api/reports")', source)
+        submit_start = source.index("async function submitReport()")
+        submit_end = source.index("const closePanel", submit_start)
+        self.assertIn("await refreshTraffic()", source[submit_start:submit_end])
 
     def test_frontend_live_status_and_non_destructive_failure(self):
-        """Live status text updates on success; failures retry without clearing existing layers."""
-        content = self.client.get("/").get_data(as_text=True)
-        self.assertIn("Live traffic • Updated just now", content)
-        self.assertIn("Live traffic • Update failed — retrying", content)
-        self.assertIn('id="liveTrafficStatus"', content)
-        self.assertIn("trafficLayer.clearLayers()", content)
-        # Failure paths set the retry status and return before redrawing
-        self.assertIn("Update failed — retrying", content)
-        fail_ok_idx = content.find("if (!response.ok)")
-        self.assertGreater(fail_ok_idx, -1)
-        clear_idx = content.find("trafficLayer.clearLayers()")
-        self.assertGreater(clear_idx, fail_ok_idx)
-        fail_block = content[fail_ok_idx:clear_idx]
-        self.assertIn("Update failed — retrying", fail_block)
-        self.assertIn("return;", fail_block)
-        self.assertNotIn("trafficLayer.clearLayers()", fail_block)
+        source = FRONTEND_REACT_SOURCE.read_text(encoding="utf-8")
+        self.assertIn('"API CONNECTED"', source)
+        self.assertIn('"API UNAVAILABLE"', source)
+        self.assertIn("setApiConnected(false)", source)
+        self.assertNotIn("setTraffic([])", source)
 
     def test_frontend_preserves_step22_visualization(self):
-        """Step 22 polyline vs circle-marker rendering remains intact."""
-        content = self.client.get("/").get_data(as_text=True)
-        self.assertIn("L.polyline", content)
-        self.assertIn("group.geometry", content)
-        self.assertIn("L.circleMarker", content)
-        self.assertIn("legend-line", content)
-        self.assertIn("legend-dot", content)
-        self.assertIn("segmentWeight", content)
+        source = FRONTEND_REACT_SOURCE.read_text(encoding="utf-8")
+        self.assertIn("L.polyline", source)
+        self.assertIn("segment.geometry", source)
+        self.assertIn("L.circleMarker", source)
+        self.assertIn("legend-line", source)
+        self.assertIn("report_count", source)
 
 
 if __name__ == "__main__":

@@ -1,10 +1,19 @@
 
 
 import os
+import json
+import threading
+import time
+from urllib.parse import urlencode
+from urllib.request import Request as URLRequest, urlopen
 from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 from datetime import datetime, timezone
 from math import radians, sin, cos, sqrt, atan2
+try:
+    from .places import get_engine as get_places_engine, migrate as migrate_places, search as search_places_records, places as places_table, PLACE_CATEGORIES, record_to_json
+except ImportError:
+    from places import get_engine as get_places_engine, migrate as migrate_places, search as search_places_records, places as places_table, PLACE_CATEGORIES, record_to_json
 try:
     from .road_segment import RoadSegment, RoadMatcher
     from .road_loader import load_road_network
@@ -14,13 +23,52 @@ except ImportError:
     from road_loader import load_road_network
     from router import Router
 
+try:
+    from .routing_provider import (
+        RoutingProviderChain,
+        create_default_chain,
+        ProviderRouteResult,
+    )
+except ImportError:
+    from routing_provider import (
+        RoutingProviderChain,
+        create_default_chain,
+        ProviderRouteResult,
+    )
+
 # Project directories
 BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(BACKEND_DIR)
 FRONTEND_DIR = os.path.join(PROJECT_ROOT, "frontend")
+FRONTEND_BUILD_DIR = os.path.join(PROJECT_ROOT, "frontend-vite", "dist")
 
 app = Flask(__name__)
 CORS(app)
+
+# Place persistence is separate from the existing in-memory traffic reports.
+# SQLite is the safe local default; NEXUS_DATABASE_URL can select PostgreSQL.
+places_engine = get_places_engine()
+migrate_places(places_engine)
+
+@app.get("/api/places/categories")
+def get_place_categories():
+    return jsonify({"categories": PLACE_CATEGORIES})
+
+@app.get("/api/places")
+def get_places():
+    try:
+        return jsonify(search_places_records(places_engine, request.args))
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+
+@app.get("/api/places/<string:place_id>")
+def get_place(place_id):
+    from sqlalchemy import select
+    with places_engine.connect() as connection:
+        row = connection.execute(select(places_table).where(places_table.c.id == place_id, places_table.c.listing_status == "active")).mappings().first()
+    if row is None:
+        return jsonify({"error": "Place not found."}), 404
+    return jsonify(record_to_json(row))
 
 # Road network matcher instance
 road_matcher = RoadMatcher()
@@ -43,17 +91,36 @@ if os.path.exists(OSM_DATA_PATH):
 else:
     print(f"[NEXUS] Notice: Local OSM road dataset not found at '{OSM_DATA_PATH}'. Router running in unmapped mode.")
 
+# Routing provider chain: local router preferred, OSRM fallback for out-of-coverage
+OSRM_BASE_URL = os.environ.get("NEXUS_OSRM_BASE_URL", None)
+OSRM_TIMEOUT_SECONDS = float(os.environ.get("NEXUS_OSRM_TIMEOUT_SECONDS", "10.0"))
+routing_chain = create_default_chain(
+    router,
+    max_snap_distance_km=0.5,
+    osrm_base_url=OSRM_BASE_URL,
+    osrm_timeout_seconds=OSRM_TIMEOUT_SECONDS,
+    enable_osrm_fallback=OSRM_BASE_URL is not None,
+)
+
 # ---------------------------------------------------------------------------
 # Frontend: Serve NEXUS Web UI (avoids file:// browser restrictions)
 # ---------------------------------------------------------------------------
 @app.get("/")
 def serve_root():
-    return send_from_directory(FRONTEND_DIR, "index.html")
+    frontend_dir = FRONTEND_BUILD_DIR if os.path.isfile(os.path.join(FRONTEND_BUILD_DIR, "index.html")) else FRONTEND_DIR
+    return send_from_directory(frontend_dir, "index.html")
 
 
 @app.get("/index.html")
 def serve_index_html():
-    return send_from_directory(FRONTEND_DIR, "index.html")
+    return serve_root()
+
+
+@app.get("/assets/<path:filename>")
+def serve_frontend_asset(filename):
+    if not os.path.isdir(FRONTEND_BUILD_DIR):
+        return jsonify({"error": "Built frontend assets are unavailable."}), 404
+    return send_from_directory(os.path.join(FRONTEND_BUILD_DIR, "assets"), filename)
 
 # ---------------------------------------------------------------------------
 # In-memory store (lost on restart — intentional at this stage)
@@ -61,6 +128,13 @@ def serve_index_html():
 reports = []
 
 REPORT_EXPIRY_MINUTES = 30
+MAX_ROUTE_SNAP_DISTANCE_KM = 0.5
+GEOCODER_URL = os.environ.get("NEXUS_GEOCODER_URL", "https://nominatim.openstreetmap.org/search")
+GEOCODER_MIN_INTERVAL_SECONDS = 1.0
+GEOCODER_CACHE_MAX_ENTRIES = 256
+_geocoder_lock = threading.Lock()
+_geocoder_last_request_at = 0.0
+_geocoder_cache = {}
 
 # ---------------------------------------------------------------------------
 # Valid values
@@ -392,17 +466,70 @@ def _validate_coordinate(coord_obj, field_name):
 
     return (lat, lon), None
 
+
+@app.get("/api/geocode")
+def search_places():
+    """Search a place only after an explicit user request; cache and throttle provider calls."""
+    global _geocoder_last_request_at
+    query = (request.args.get("q") or "").strip()
+    if len(query) < 2 or len(query) > 200:
+        return jsonify({"error": "Enter a place name or address between 2 and 200 characters."}), 400
+
+    cache_key = query.casefold()
+    with _geocoder_lock:
+        if cache_key in _geocoder_cache:
+            return jsonify({"results": _geocoder_cache[cache_key], "cached": True})
+        now = time.monotonic()
+        if now - _geocoder_last_request_at < GEOCODER_MIN_INTERVAL_SECONDS:
+            return jsonify({"error": "Place search is rate limited. Wait a moment and try again."}), 429
+        _geocoder_last_request_at = now
+
+    url = f"{GEOCODER_URL}?{urlencode({'q': query, 'format': 'jsonv2', 'addressdetails': 1, 'limit': 5})}"
+    provider_request = URLRequest(
+        url,
+        headers={
+            "Accept": "application/json",
+            "User-Agent": "NEXUS-Traffic-Intelligence/1.0",
+        },
+    )
+    try:
+        with urlopen(provider_request, timeout=6) as response:
+            provider_data = json.loads(response.read().decode("utf-8"))
+        if not isinstance(provider_data, list):
+            raise ValueError("The geocoding provider returned an unexpected response.")
+        results = []
+        for item in provider_data:
+            if not isinstance(item, dict) or not item.get("display_name"):
+                continue
+            try:
+                latitude, longitude = float(item["lat"]), float(item["lon"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
+                continue
+            results.append({
+                "display_name": str(item["display_name"]),
+                "lat": latitude,
+                "lon": longitude,
+            })
+        with _geocoder_lock:
+            if len(_geocoder_cache) >= GEOCODER_CACHE_MAX_ENTRIES:
+                _geocoder_cache.pop(next(iter(_geocoder_cache)))
+            _geocoder_cache[cache_key] = results
+        return jsonify({"results": results, "cached": False})
+    except Exception:
+        app.logger.warning("Place search provider request failed", exc_info=app.debug)
+        return jsonify({"error": "Place search is temporarily unavailable. Try again or choose the location on the map."}), 502
+
 # ---------------------------------------------------------------------------
 # Traffic-Aware Routing (Step 25.3): condition -> travel-time multiplier
 # ---------------------------------------------------------------------------
-# Deterministic mapping from NEXUS consensus conditions (VALID_CONDITIONS)
-# to routing travel-time multipliers. "Blocked" uses a large finite penalty so
-# Dijkstra avoids the segment without needing a special-cased removal step.
+# Deterministic multipliers for traversable traffic conditions. A Blocked
+# segment is represented separately and excluded from each route request.
 TRAFFIC_CONDITION_MULTIPLIERS = {
     "Normal":   1.0,
     "Moderate": 1.25,
     "Heavy":    1.75,
-    "Blocked":  100.0,
 }
 
 
@@ -414,10 +541,11 @@ def traffic_condition_to_multiplier(condition):
     return TRAFFIC_CONDITION_MULTIPLIERS.get(condition, 1.0)
 
 
-def get_current_traffic_multipliers():
+def get_current_traffic_routing_state():
     """
-    Build a {segment_id: multiplier} mapping from the CURRENT community
-    traffic consensus for consumption by Router.find_route().
+    Build the current {segment_id: multiplier} and blocked segment IDs for
+    Router.find_route(). Blocked segments are infeasible; other multipliers
+    scale the base travel time in seconds.
 
     - Purges expired reports first (> REPORT_EXPIRY_MINUTES old) so stale
       reports never influence routing.
@@ -430,11 +558,22 @@ def get_current_traffic_multipliers():
     traffic_segments = aggregate_traffic()
 
     multipliers = {}
+    blocked_segment_ids = set()
     for segment in traffic_segments:
         seg_id = segment.get("segment_id")
         if seg_id:
-            multipliers[seg_id] = traffic_condition_to_multiplier(segment.get("status"))
+            condition = segment.get("status")
+            if condition == "Blocked":
+                blocked_segment_ids.add(seg_id)
+            else:
+                multipliers[seg_id] = traffic_condition_to_multiplier(condition)
 
+    return multipliers, blocked_segment_ids
+
+
+def get_current_traffic_multipliers():
+    """Compatibility helper returning only traversable segment multipliers."""
+    multipliers, _ = get_current_traffic_routing_state()
     return multipliers
 
 # ---------------------------------------------------------------------------
@@ -460,14 +599,21 @@ def get_route():
     if err:
         return jsonify({"error": err}), 400
 
+    # Development-only trace to correlate browser-selected points with the
+    # coordinates validated and passed to this request's route matcher.
+    if app.debug:
+        app.logger.debug("POST /api/route received start=%s destination=%s", start_coord, dest_coord)
+
     try:
         # Step 25.3: automatically weight the route with current community
         # traffic consensus (expired reports purged inside the helper).
-        traffic_multipliers = get_current_traffic_multipliers()
+        traffic_multipliers, blocked_segment_ids = get_current_traffic_routing_state()
         route_result = router.find_route(
             start_coord,
             dest_coord,
             traffic_multipliers=traffic_multipliers,
+            blocked_segment_ids=blocked_segment_ids,
+            max_snap_distance_km=MAX_ROUTE_SNAP_DISTANCE_KM,
         )
     except Exception:
         return jsonify({
@@ -481,6 +627,60 @@ def get_route():
         return jsonify(result_dict), 200
     else:
         return jsonify(result_dict), 404
+
+
+# ---------------------------------------------------------------------------
+# API: routing with fallback to external provider (OSRM)
+# ---------------------------------------------------------------------------
+@app.post("/api/route-external")
+def get_route_external():
+    data = request.get_json(silent=True)
+    if not data or not isinstance(data, dict):
+        return jsonify({"error": "Invalid or missing JSON body."}), 400
+
+    if "start" not in data:
+        return jsonify({"error": "Missing required field: 'start'."}), 400
+
+    if "destination" not in data:
+        return jsonify({"error": "Missing required field: 'destination'."}), 400
+
+    start_coord, err = _validate_coordinate(data.get("start"), "start")
+    if err:
+        return jsonify({"error": err}), 400
+
+    dest_coord, err = _validate_coordinate(data.get("destination"), "destination")
+    if err:
+        return jsonify({"error": err}), 400
+
+    # Development-only trace to correlate browser-selected points with the
+    # coordinates validated and passed to this request's route matcher.
+    if app.debug:
+        app.logger.debug(
+            "POST /api/route-external received start=%s destination=%s", start_coord, dest_coord
+        )
+
+    try:
+        route_result = routing_chain.route(
+            start_coord,
+            dest_coord,
+            traffic_multipliers=get_current_traffic_multipliers(),
+            blocked_segment_ids=None,
+        )
+    except Exception:
+        return jsonify(
+            {
+                "found": False,
+                "status": "INTERNAL_ROUTING_ERROR",
+                "error": "An unexpected error occurred during external route calculation.",
+            }
+        ), 400
+
+    result_dict = route_result.to_dict()
+    if route_result.found:
+        return jsonify(result_dict), 200
+    else:
+        return jsonify(result_dict), 404
+
 
 # ---------------------------------------------------------------------------
 

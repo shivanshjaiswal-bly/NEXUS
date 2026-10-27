@@ -1,0 +1,4 @@
+-- Migration 0001_places is applied by backend.places.migrate using SQLAlchemy
+-- metadata, which emits dialect-appropriate PostgreSQL or SQLite DDL.
+-- Upgrade creates only `places` and its four indexes; downgrade removes only
+-- those objects. It never alters the existing traffic/report tables.

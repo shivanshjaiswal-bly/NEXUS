@@ -26,10 +26,10 @@ class TestRouterEngine(unittest.TestCase):
 
     # 1. GeoJSON graph loading
     def test_01_geojson_graph_loading(self):
-        self.assertEqual(self.router.feature_count, 248)
-        self.assertEqual(len(self.router.nodes), 2179)
-        self.assertEqual(self.router.count_connected_components(), 1)
-        self.assertGreater(self.router.edge_count, 3000)
+        self.assertEqual(self.router.feature_count, 29466)
+        self.assertGreater(len(self.router.nodes), 20000)
+        self.assertEqual(self.router.count_connected_components(), 35)
+        self.assertGreater(self.router.edge_count, 50000)
 
     # 2. Expected baseline segment IDs
     def test_02_baseline_segment_ids_exist(self):
@@ -226,6 +226,114 @@ class TestRouterEngine(unittest.TestCase):
         r2 = self.router.find_route(u, v, traffic_multipliers={mid_seg: 100.0})
         self.assertTrue(r2.found)
         self.assertNotIn(mid_seg, r2.segment_ids)
+
+    def test_16_fastest_route_can_be_longer_and_eta_uses_traffic_time(self):
+        start = (26.0, 80.0)
+        middle_short = (26.0, 80.01)
+        middle_fast = (26.02, 80.01)
+        destination = (26.0, 80.02)
+
+        def feature(osm_id, a, b, speed):
+            return {
+                "type": "Feature",
+                "properties": {"osm_id": osm_id, "maxspeed": speed, "oneway": "no"},
+                "geometry": {"type": "LineString", "coordinates": [
+                    [a[1], a[0]], [b[1], b[0]],
+                ]},
+            }
+
+        r = build_graph({
+            "type": "FeatureCollection",
+            "features": [
+                feature(9101, start, middle_short, 5),
+                feature(9102, middle_short, destination, 5),
+                feature(9201, start, middle_fast, 60),
+                feature(9202, middle_fast, destination, 60),
+            ],
+        })
+
+        # A generalized distance cost identifies the shorter path; default
+        # routing minimizes travel time and therefore takes the longer detour.
+        shortest = r.find_route(
+            start, destination, edge_cost_func=lambda edge, multiplier: edge.distance_km
+        )
+        fast_segment_ids = {"osm:way:9201", "osm:way:9202"}
+        multipliers = {segment_id: 1.5 for segment_id in fast_segment_ids}
+        fastest = r.find_route(start, destination, traffic_multipliers=multipliers)
+
+        self.assertTrue(shortest.found)
+        self.assertTrue(fastest.found)
+        self.assertEqual(set(shortest.segment_ids), {"osm:way:9101", "osm:way:9102"})
+        self.assertEqual(set(fastest.segment_ids), fast_segment_ids)
+        self.assertGreater(fastest.total_distance_km, shortest.total_distance_km)
+
+        path_edges = [
+            next(edge for edge in r.adjacency[source] if edge.target == target)
+            for source, target in zip(fastest.coordinates, fastest.coordinates[1:])
+        ]
+        expected_eta = sum(
+            r.calculate_edge_travel_time(edge, multipliers) for edge in path_edges
+        )
+        self.assertAlmostEqual(fastest.estimated_travel_time_s, expected_eta)
+        base_fast_eta = sum(edge.base_travel_time_s for edge in path_edges)
+        self.assertAlmostEqual(fastest.estimated_travel_time_s, base_fast_eta * 1.5)
+
+        # Generalized edge costs affect path choice but are never mislabeled as ETA.
+        shortest_edges = [
+            next(edge for edge in r.adjacency[source] if edge.target == target)
+            for source, target in zip(shortest.coordinates, shortest.coordinates[1:])
+        ]
+        base_eta = sum(r.calculate_edge_travel_time(edge) for edge in shortest_edges)
+        self.assertAlmostEqual(shortest.estimated_travel_time_s, base_eta)
+        self.assertGreater(shortest.estimated_travel_time_s, 100.0)
+
+    def test_17_blocked_segments_are_excluded_without_mutating_graph(self):
+        start = (26.0, 80.0)
+        destination = (26.0, 80.02)
+        middle_short = (26.0, 80.01)
+        middle_fast = (26.02, 80.01)
+
+        def feature(osm_id, a, b, speed):
+            return {
+                "type": "Feature",
+                "properties": {"osm_id": osm_id, "maxspeed": speed},
+                "geometry": {"type": "LineString", "coordinates": [
+                    [a[1], a[0]], [b[1], b[0]],
+                ]},
+            }
+
+        r = build_graph({
+            "type": "FeatureCollection",
+            "features": [
+                feature(9301, start, middle_short, 5),
+                feature(9302, middle_short, destination, 5),
+                feature(9401, start, middle_fast, 60),
+                feature(9402, middle_fast, destination, 60),
+            ],
+        })
+        original_edge_count = r.edge_count
+        blocked_ids = {"osm:way:9401", "osm:way:9402"}
+
+        alternate = r.find_route(start, destination, blocked_segment_ids=blocked_ids)
+        self.assertTrue(alternate.found)
+        self.assertEqual(set(alternate.segment_ids), {"osm:way:9301", "osm:way:9302"})
+        self.assertEqual(r.edge_count, original_edge_count)
+
+        # The route request's exclusions do not affect the shared graph or a
+        # subsequent request.
+        unblocked = r.find_route(start, destination)
+        self.assertTrue(unblocked.found)
+        self.assertEqual(set(unblocked.segment_ids), {"osm:way:9401", "osm:way:9402"})
+
+        only_path = build_graph({
+            "type": "FeatureCollection",
+            "features": [feature(9501, start, destination, 30)],
+        })
+        unavailable = only_path.find_route(
+            start, destination, blocked_segment_ids={"osm:way:9501"}
+        )
+        self.assertFalse(unavailable.found)
+        self.assertEqual(unavailable.status, "NO_PATH_FOUND")
 
 
 if __name__ == "__main__":

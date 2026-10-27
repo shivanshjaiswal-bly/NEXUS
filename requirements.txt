@@ -1,0 +1,4 @@
+Flask
+flask-cors
+SQLAlchemy>=2.0,<3.0
+# Install psycopg[binary] when configuring NEXUS_DATABASE_URL with PostgreSQL.

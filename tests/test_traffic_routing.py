@@ -24,6 +24,7 @@ from app import (
     TRAFFIC_CONDITION_MULTIPLIERS,
     traffic_condition_to_multiplier,
     get_current_traffic_multipliers,
+    get_current_traffic_routing_state,
     REPORT_EXPIRY_MINUTES,
 )
 from road_loader import load_road_network
@@ -61,15 +62,91 @@ def _seed_report(condition, incident="None", time_iso=None):
     })
 
 
+import json
+import tempfile
+
+TRAFFIC_FIXTURE = {
+    "type": "FeatureCollection",
+    "features": [
+        {
+            "type": "Feature",
+            "id": "way/44135116",
+            "properties": {
+                "osm_id": 44135116,
+                "name": "The Mall Road",
+                "highway": "primary",
+                "maxspeed": 50,
+                "oneway": "no",
+                "tolerance_km": 0.08,
+            },
+            "geometry": {
+                "type": "LineString",
+                "coordinates": [
+                    [80.326401, 26.475488],
+                    [80.3335725, 26.476596],
+                    [80.350253, 26.452836],
+                ],
+            },
+        },
+        {
+            "type": "Feature",
+            "id": "way/88888888",
+            "properties": {
+                "osm_id": 88888888,
+                "name": "Alternate Road",
+                "highway": "secondary",
+                "maxspeed": 45,
+                "oneway": "no",
+                "tolerance_km": 0.08,
+            },
+            "geometry": {
+                "type": "LineString",
+                "coordinates": [
+                    [80.326401, 26.475488],
+                    [80.330000, 26.460000],
+                    [80.350253, 26.452836],
+                ],
+            },
+        },
+    ],
+}
+
+
 class TrafficRoutingTestCase(unittest.TestCase):
-    """Base class that isolates the shared in-memory report store."""
+    """Base class that isolates the shared in-memory report store and uses a deterministic fixture."""
+
+    _fixture_file = None
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        if TrafficRoutingTestCase._fixture_file is None:
+            tf = tempfile.NamedTemporaryFile("w", suffix=".geojson", delete=False, encoding="utf-8")
+            json.dump(TRAFFIC_FIXTURE, tf)
+            tf.close()
+            TrafficRoutingTestCase._fixture_file = tf.name
+
+        router.build_graph(TRAFFIC_FIXTURE)
+        road_matcher.registered_segments.clear()
+        load_road_network(TrafficRoutingTestCase._fixture_file, road_matcher)
+
+    @classmethod
+    def tearDownClass(cls):
+        super().tearDownClass()
+        router.load_geojson(OSM_DATA_PATH)
+        road_matcher.registered_segments.clear()
+        load_road_network(OSM_DATA_PATH, road_matcher)
+        if TrafficRoutingTestCase._fixture_file and os.path.exists(TrafficRoutingTestCase._fixture_file):
+            try:
+                os.remove(TrafficRoutingTestCase._fixture_file)
+            except OSError:
+                pass
+            TrafficRoutingTestCase._fixture_file = None
 
     def setUp(self):
         reports.clear()
-        # Restore the baseline OSM segment registry: test_traffic.py clears
-        # road_matcher.registered_segments in its teardowns. Re-running the
-        # existing loader is idempotent (dict keyed by segment_id).
-        load_road_network(OSM_DATA_PATH, road_matcher)
+        if CONGESTED_SEGMENT not in road_matcher.registered_segments:
+            load_road_network(TrafficRoutingTestCase._fixture_file, road_matcher)
         self.addCleanup(reports.clear)
 
 
@@ -80,12 +157,13 @@ class TestTrafficConditionToMultiplier(TrafficRoutingTestCase):
     def test_01_multiplier_mapping_uses_existing_conditions(self):
         self.assertEqual(
             set(TRAFFIC_CONDITION_MULTIPLIERS.keys()),
-            {"Normal", "Moderate", "Heavy", "Blocked"},
+            {"Normal", "Moderate", "Heavy"},
         )
         self.assertEqual(traffic_condition_to_multiplier("Normal"), 1.0)
         self.assertEqual(traffic_condition_to_multiplier("Moderate"), 1.25)
         self.assertEqual(traffic_condition_to_multiplier("Heavy"), 1.75)
-        self.assertEqual(traffic_condition_to_multiplier("Blocked"), 100.0)
+        self.assertNotIn("Blocked", TRAFFIC_CONDITION_MULTIPLIERS)
+        self.assertEqual(traffic_condition_to_multiplier("Blocked"), 1.0)
 
     # 1b. No traffic reports -> empty multiplier map, routing behaves as before.
     def test_02_no_reports_routing_unchanged(self):
@@ -111,11 +189,12 @@ class TestTrafficConditionToMultiplier(TrafficRoutingTestCase):
         multipliers = get_current_traffic_multipliers()
         self.assertEqual(multipliers, {CONGESTED_SEGMENT: 1.75})
 
-    # 4. Blocked traffic -> correct segment receives multiplier 100.0.
-    def test_05_blocked_report_yields_100(self):
+    # Blocked traffic is represented as an exclusion, not a cost multiplier.
+    def test_05_blocked_report_yields_exclusion(self):
         _seed_report("Blocked", incident="Road Block")
-        multipliers = get_current_traffic_multipliers()
-        self.assertEqual(multipliers, {CONGESTED_SEGMENT: 100.0})
+        multipliers, blocked_ids = get_current_traffic_routing_state()
+        self.assertEqual(multipliers, {})
+        self.assertEqual(blocked_ids, {CONGESTED_SEGMENT})
 
     # 4b. Consensus is reused: mixed reports resolve through existing logic.
     def test_06_consensus_condition_drives_multiplier(self):
@@ -187,8 +266,11 @@ class TestCongestionRerouting(TrafficRoutingTestCase):
         self.assertIn(CONGESTED_SEGMENT, baseline.segment_ids)
 
         _seed_report("Blocked", incident="Road Block")
+        multipliers, blocked_ids = get_current_traffic_routing_state()
         blocked = router.find_route(
-            START, DEST, traffic_multipliers=get_current_traffic_multipliers()
+            START, DEST,
+            traffic_multipliers=multipliers,
+            blocked_segment_ids=blocked_ids,
         )
         self.assertTrue(blocked.found)
         self.assertNotIn(CONGESTED_SEGMENT, blocked.segment_ids)
@@ -208,10 +290,10 @@ class TestCongestionRerouting(TrafficRoutingTestCase):
 
         reports.clear()
         _seed_report("Blocked", incident="Road Block")
-        blocked_cost = router.calculate_edge_cost(
-            edge, get_current_traffic_multipliers()
-        )
-        self.assertAlmostEqual(blocked_cost, base_cost * 100.0)
+        multipliers, blocked_ids = get_current_traffic_routing_state()
+        self.assertEqual(multipliers, {})
+        self.assertIn(CONGESTED_SEGMENT, blocked_ids)
+        self.assertEqual(router.calculate_edge_cost(edge, multipliers), base_cost)
 
 
 class TestRouteAPIWithTraffic(TrafficRoutingTestCase):
@@ -219,6 +301,7 @@ class TestRouteAPIWithTraffic(TrafficRoutingTestCase):
 
     @classmethod
     def setUpClass(cls):
+        super().setUpClass()
         app.config["TESTING"] = True
         cls.client = app.test_client()
 

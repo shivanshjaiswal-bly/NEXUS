@@ -397,7 +397,10 @@ class Router:
         Allows dynamic traffic multipliers or custom weighting functions without
         tight coupling to external or global traffic state.
 
-        Default cost = base_travel_time_s * traffic_multiplier.
+        By default this is effective travel time in seconds:
+        ``base_travel_time_s * traffic_multiplier``. A supplied callback may
+        instead return a generalized routing cost; that cost is used only for
+        path selection and is not assumed to be seconds for the reported ETA.
         """
         mult = 1.0
         if traffic_multipliers and edge.segment_id in traffic_multipliers:
@@ -408,6 +411,19 @@ class Router:
 
         return edge.base_travel_time_s * mult
 
+    @staticmethod
+    def calculate_edge_travel_time(
+        edge: Edge,
+        traffic_multipliers: Optional[Dict[str, float]] = None,
+    ) -> float:
+        """Return the modelled edge travel time in seconds, independent of
+        any optional generalized path-selection cost.
+        """
+        mult = 1.0
+        if traffic_multipliers and edge.segment_id in traffic_multipliers:
+            mult = max(1.0, float(traffic_multipliers[edge.segment_id]))
+        return edge.base_travel_time_s * mult
+
     def find_route(
         self,
         start: Tuple[float, float],
@@ -415,6 +431,7 @@ class Router:
         traffic_multipliers: Optional[Dict[str, float]] = None,
         edge_cost_func: Optional[Callable[[Edge, float], float]] = None,
         max_snap_distance_km: Optional[float] = None,
+        blocked_segment_ids: Optional[Set[str]] = None,
     ) -> RouteResult:
         """
         Calculate the optimal route between start and destination using Dijkstra's algorithm.
@@ -425,6 +442,9 @@ class Router:
             traffic_multipliers: Optional dict mapping segment_id to dynamic congestion multiplier.
             edge_cost_func: Optional custom cost calculation callable.
             max_snap_distance_km: Optional maximum snapping distance threshold.
+            blocked_segment_ids: Segment IDs unavailable for this request. The
+                shared graph remains unchanged; directed adjacency still
+                enforces the source road's one-way rules.
 
         Returns:
             RouteResult with ordered coordinates, segment IDs, distance, and time.
@@ -438,20 +458,25 @@ class Router:
 
         snapped_start = self.snap_to_nearest_node(start[0], start[1], max_snap_distance_km)
         if not snapped_start:
-            return RouteResult(
-                found=False,
-                status="START_NOT_FOUND",
-                error=f"Start coordinate ({start[0]}, {start[1]}) could not be snapped to the road network.",
+            nearest_start = self.snap_to_nearest_node(start[0], start[1]) if max_snap_distance_km is not None else None
+            error = (
+                f"Start is outside the currently mapped road-network coverage. Nearest network node is "
+                f"{nearest_start.snap_distance_km:.2f} km away; the route snapping limit is "
+                f"{max_snap_distance_km:.2f} km. Select a point near mapped roads or expand the road dataset to cover this area."
+                if nearest_start else f"Start coordinate ({start[0]}, {start[1]}) could not be snapped to the road network."
             )
+            return RouteResult(found=False, status="START_NOT_FOUND", error=error)
 
         snapped_dest = self.snap_to_nearest_node(destination[0], destination[1], max_snap_distance_km)
         if not snapped_dest:
-            return RouteResult(
-                found=False,
-                status="DESTINATION_NOT_FOUND",
-                error=f"Destination coordinate ({destination[0]}, {destination[1]}) could not be snapped to the road network.",
+            nearest_dest = self.snap_to_nearest_node(destination[0], destination[1]) if max_snap_distance_km is not None else None
+            error = (
+                f"Destination is outside the currently mapped road-network coverage. Nearest network node is "
+                f"{nearest_dest.snap_distance_km:.2f} km away; the route snapping limit is "
+                f"{max_snap_distance_km:.2f} km. Select a point near mapped roads or expand the road dataset to cover this area."
+                if nearest_dest else f"Destination coordinate ({destination[0]}, {destination[1]}) could not be snapped to the road network."
             )
-
+            return RouteResult(found=False, status="DESTINATION_NOT_FOUND", error=error)
         start_node = snapped_start.node
         dest_node = snapped_dest.node
 
@@ -485,8 +510,8 @@ class Router:
                 snapped_destination=snapped_dest,
                 error=(
                     "Start and destination both resolve to the same road-network "
-                    "location. Please choose two clearly different points on or "
-                    "near mapped roads."
+                    "location. Please select points farther apart and closer to "
+                    "mapped roads."
                 ),
             )
 
@@ -506,6 +531,8 @@ class Router:
                 break
 
             for edge in self.adjacency.get(current_node, []):
+                if blocked_segment_ids and edge.segment_id in blocked_segment_ids:
+                    continue
                 next_node = edge.target
                 edge_cost = self.calculate_edge_cost(edge, traffic_multipliers, edge_cost_func)
                 new_cost = current_cost + edge_cost
@@ -540,7 +567,12 @@ class Router:
         path_edges.reverse()
 
         total_distance = sum(e.distance_km for e in path_edges)
-        total_time = sum(e.base_travel_time_s for e in path_edges)
+        # ETA always uses the traffic-adjusted travel-time model, even when a
+        # custom generalized cost function was used to select the path.
+        total_time = sum(
+            self.calculate_edge_travel_time(edge, traffic_multipliers)
+            for edge in path_edges
+        )
 
         # Ordered segment IDs traversed (preserving chronological order of distinct segments)
         ordered_segment_ids: List[str] = []

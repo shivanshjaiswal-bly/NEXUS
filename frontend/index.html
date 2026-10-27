@@ -153,7 +153,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
     <aside id="sidePanel" class="side-panel">
         <div class="panel-head">
             <h2 id="panelTitle">Report Traffic</h2>
-            <button class="close-btn" onclick="closeAllModals()" title="Close" aria-label="Close">×</button>
+            <button type="button" class="close-btn" onclick="closeAllModals()" title="Close" aria-label="Close">×</button>
         </div>
 
         <div id="reportForm" class="panel-body" hidden>
@@ -442,6 +442,14 @@ button:disabled{opacity:.5;cursor:not-allowed}
         let selectedIncident  = null;
         const PANEL_WIDTH_PX = 360;
 
+        function cancelMapSelection() {
+            mapSelectionMode = null;
+            const startButton = document.getElementById("selectStartBtn");
+            const destinationButton = document.getElementById("selectDestBtn");
+            if (startButton) startButton.classList.remove("active");
+            if (destinationButton) destinationButton.classList.remove("active");
+        }
+
         function showReportForm() {
             const panel = document.getElementById("sidePanel");
             const reportForm = document.getElementById("reportForm");
@@ -574,6 +582,47 @@ button:disabled{opacity:.5;cursor:not-allowed}
         let mapSelectionMode = null;
         let startMarker = null;
         let destMarker = null;
+        let startCoordinatesSelected = false;
+        let destinationCoordinatesSelected = false;
+
+        function isValidRouteCoordinate(lat, lon) {
+            return Number.isFinite(lat) && Number.isFinite(lon) &&
+                lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180;
+        }
+
+        function updateFindRouteButtonState() {
+            const button = document.getElementById("findRouteBtn");
+            if (!button) return;
+
+            const startLatValue = document.getElementById("startLat").value.trim();
+            const startLonValue = document.getElementById("startLon").value.trim();
+            const destLatValue = document.getElementById("destLat").value.trim();
+            const destLonValue = document.getElementById("destLon").value.trim();
+            const startLat = startLatValue === "" ? NaN : Number(startLatValue);
+            const startLon = startLonValue === "" ? NaN : Number(startLonValue);
+            const destLat = destLatValue === "" ? NaN : Number(destLatValue);
+            const destLon = destLonValue === "" ? NaN : Number(destLonValue);
+
+            button.disabled = !(
+                startCoordinatesSelected && destinationCoordinatesSelected &&
+                isValidRouteCoordinate(startLat, startLon) &&
+                isValidRouteCoordinate(destLat, destLon)
+            );
+        }
+
+        function setStartCoordinates(lat, lon) {
+            document.getElementById("startLat").value = lat;
+            document.getElementById("startLon").value = lon;
+            startCoordinatesSelected = true;
+            updateFindRouteButtonState();
+        }
+
+        function setDestinationCoordinates(lat, lon) {
+            document.getElementById("destLat").value = lat;
+            document.getElementById("destLon").value = lon;
+            destinationCoordinatesSelected = true;
+            updateFindRouteButtonState();
+        }
 
         // Current location helper
         const GEOLOCATION_START_LABEL = "Use Current Location";
@@ -605,8 +654,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
                     }
                     const latitude  = position.coords.latitude;
                     const longitude = position.coords.longitude;
-                    document.getElementById("startLat").value = latitude;
-                    document.getElementById("startLon").value = longitude;
+                    setStartCoordinates(latitude, longitude);
                     document.getElementById("startSearchInput").value = "Current location";
                     document.getElementById("startSummary").innerHTML = "✓ Current location selected";
                     if (startMarker) map.removeLayer(startMarker);
@@ -746,16 +794,14 @@ button:disabled{opacity:.5;cursor:not-allowed}
             dropdownEl.innerHTML = "";
             summaryEl.innerHTML = "✓ Location selected";
             if (type === 'start') {
-                document.getElementById('startLat').value = lat;
-                document.getElementById('startLon').value = lon;
+                setStartCoordinates(lat, lon);
                 if (startMarker) map.removeLayer(startMarker);
                 startMarker = L.circleMarker([lat, lon], {
                     radius: 8, color: '#15803d', fillColor: '#22c55e', fillOpacity: 1, weight: 2
                 }).addTo(map).bindPopup("Start: " + item.name);
                 map.setView([lat, lon], 15);
             } else {
-                document.getElementById('destLat').value = lat;
-                document.getElementById('destLon').value = lon;
+                setDestinationCoordinates(lat, lon);
                 if (destMarker) map.removeLayer(destMarker);
                 destMarker = L.circleMarker([lat, lon], {
                     radius: 8, color: '#b91c1c', fillColor: '#ef4444', fillOpacity: 1, weight: 2
@@ -785,8 +831,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
             const lat = e.latlng.lat.toFixed(6);
             const lon = e.latlng.lng.toFixed(6);
             if (mapSelectionMode === 'start') {
-                document.getElementById('startLat').value = lat;
-                document.getElementById('startLon').value = lon;
+                setStartCoordinates(lat, lon);
                 document.getElementById('startSummary').innerHTML = "✓ Location selected";
                 document.getElementById('startSearchInput').value = "Selected on map";
                 if (startMarker) map.removeLayer(startMarker);
@@ -796,8 +841,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
                 document.getElementById("routeStatus").innerHTML = "";
                 document.getElementById("selectStartBtn").classList.remove("active");
             } else if (mapSelectionMode === 'destination') {
-                document.getElementById('destLat').value = lat;
-                document.getElementById('destLon').value = lon;
+                setDestinationCoordinates(lat, lon);
                 document.getElementById('destSummary').innerHTML = "✓ Location selected";
                 document.getElementById('destSearchInput').value = "Selected on map";
                 if (destMarker) map.removeLayer(destMarker);
@@ -907,8 +951,9 @@ button:disabled{opacity:.5;cursor:not-allowed}
             statusEl.innerHTML = "";
             statusEl.style.color = "#333";
             hideRouteResult();
-            if (isNaN(startLat) || isNaN(startLon) || isNaN(destLat) || isNaN(destLon)) {
-                statusEl.innerHTML = "Please select both a start and destination.";
+            if (!isValidRouteCoordinate(startLat, startLon) || !isValidRouteCoordinate(destLat, destLon)) {
+                updateFindRouteButtonState();
+                statusEl.textContent = "Please select valid start and destination locations.";
                 statusEl.style.color = "#dc2626";
                 return;
             }
@@ -934,7 +979,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
                 });
                 const data = await response.json();
                 if (!response.ok) {
-                    statusEl.innerHTML = "Error: " + (data.error || "Failed to find route.");
+                    statusEl.textContent = "Error: " + (data.error || "Failed to find route.");
                     statusEl.style.color = "#dc2626";
                     emergencyRouteLayer.clearLayers();
                     return;
